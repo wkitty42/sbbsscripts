@@ -1,0 +1,346 @@
+#!/bin/bash
+
+# updatesbbs - a update script for a Synchronet BBS installation
+# on linux.
+#
+# author: mark lewis (aka wkitty42 and waldo kitty)
+# BBS: The SouthEast Star (sestar)
+# BBS domain: sestar.synchro.net
+#
+# this script is targeted at debian-based linux distributions.
+# it does all that is needed to update the sbbs source code and
+# build it on an existing installation. all you need to do is
+# place the script in the existing base directory, make it
+# executable, and then run it. when it completes you should be
+# able to go into sbbs/ctrl and run scfg to double check your
+# configuration settings for execution on your system.
+#
+# this script will create a log file of the same name as this
+# script plus the date and time.
+# eg: updatesbbs-201810251345.log
+
+# first load the conf file with all our variables and macros
+MYSCRIPTDIR="$(dirname "$0")"
+MYSCRIPTCONF="$MYSCRIPTDIR/sbbsbuild.conf"
+if [ -f "$MYSCRIPTCONF" ]; then
+  printf "\nLoading %s..." "$MYSCRIPTCONF"
+  source "$MYSCRIPTCONF"
+  printf " complete.\n\n"
+else 
+  echo "required file $MYSCRIPTCONF does not exist... aborting..."
+  exit
+fi
+
+
+# you should not need to edit below this line
+
+
+ECODE=0
+CWD=$PWD
+SDATE1=$(date +"%s")
+SCRIPTNAME=$(basename "$0")
+EXECDATE=$(date --date="@$SDATE1" '+%Y%m%d%H%M')
+LOGFILE="$SBBSDIR/$SCRIPTNAME-$EXECDATE.log"
+
+export SBBSCTRL=$SBBSDIR/ctrl
+export SBBSEXEC=$SBBSDIR/exec
+
+printf "\n"
+printf "* %s logging to %s\n" "$SCRIPTNAME" "$LOGFILE"
+
+function elapsedtime () {
+  local T=$1
+  local D=$((T/60/60/24))
+  local H=$((T/60/60%24))
+  local M=$((T/60%60))
+  local S=$((T%60))
+
+  printf "** Total Elapsed Time: %s day" "$D"
+  if [[ $D = 0 ]] || [[ $D -gt 1 ]]; then printf "s"
+  fi
+  printf " %s hour" "$H"
+  if [[ $H = 0 ]] || [[ $H -gt 1 ]]; then printf "s"
+  fi
+  printf " %s minute" "$M"
+  if [[ $M = 0 ]] || [[ $M -gt 1 ]]; then printf "s"
+  fi
+  printf " %s second" "$S"
+  if [[ $S = 0 ]] || [[ $S -gt 1 ]]; then printf "s"
+  fi
+  printf " **\n"
+}
+
+promptyn () {
+  if [ "$#" -ne 2 ]; then
+    printf "\nIllegal number of parameters: %s\n" $#
+    printf "promptyn requires two parameters, the prompt string and the default response\n"
+    printf "eg:\n"
+    printf "  promptyn \"do something? Y/n\" \"Yes\"\n"
+    printf "\nAborting...\n"
+    # we should break out of the script completely here but exit 1 is not working for some reason
+    #exit 1
+    return 1
+  else
+    while true; do
+      printf "\n"
+      read -r -t 30 -n 1 -p "$1 " ANSWER
+      RSLT=$?
+      if [ -n "$ANSWER" ] || [ $RSLT -gt 128 ]; then
+        if [ $RSLT -gt 128 ]; then
+          printf "timed out"
+        fi
+        printf "\n"
+      fi
+      [ -z "$ANSWER" ] && ANSWER="$2"  # force second parameter to be the default choice
+      case ${ANSWER:0:1} in
+        [Yy]* ) return 0;;
+        [Nn]* ) return 1;;
+        * ) printf "Please answer yes or no.\n";;
+      esac
+    done
+  fi
+}
+
+
+# Redirect stdout ( > ) into a named pipe ( >() ) running "tee"
+exec > >(tee "$LOGFILE")
+
+# Without this, only stdout would be captured - i.e. your
+# log file would not contain any error messages.
+exec 2>&1
+
+
+printf "* starting in %s\n" "$CWD"
+printf "* Start Date: %s\n" "$(date --date="@$SDATE1" +'%Y-%m-%d %H:%M:%S')"
+printf "\n"
+printf "BUILDOPTS: %s\n" "$BUILDOPTS"
+printf "\n"
+
+##########################
+# * do all the updates * #
+##########################
+cd "$SBBSDIR" || exit
+printf "* archiving your ctrl and exec directories...\n"
+THISCMD="tar -czf ctrl-$EXECDATE.tgz ctrl"
+printf "* %s\n" "$THISCMD"
+printf "*************************\n"
+$THISCMD
+printf "* ctrl archived\n\n"
+
+THISCMD="tar -czf exec-$EXECDATE.tgz exec"
+printf "* %s\n" "$THISCMD"
+printf "*************************\n"
+$THISCMD
+printf "* exec archived\n\n"
+
+export CVSROOT=:pserver:anonymous@cvs.synchro.net:/cvsroot/sbbs
+printf "* updating exec src 3rdp and xtrn directories...\n"
+THISCMD="cvs update -d exec"
+printf "* %s\n" "$THISCMD"
+printf "*************************\n"
+$THISCMD
+printf "\n"
+THISCMD="cvs update -d src"
+printf "* %s\n" "$THISCMD"
+printf "*************************\n"
+$THISCMD
+printf "\n"
+THISCMD="cvs update -d 3rdp"
+printf "* %s\n" "$THISCMD"
+printf "*************************\n"
+$THISCMD
+printf "\n"
+THISCMD="cvs update -d xtrn"
+printf "* %s\n" "$THISCMD"
+printf "*************************\n"
+$THISCMD
+printf "\n"
+
+if false; then
+  printf "* applying default.max.src patch\n"
+  pushd /sbbs/exec || exit
+  patch -b < /sbbs/default.src.patch
+  popd || exit
+fi
+
+if [[ $APPLYPATCHES == "true" ]]; then
+  printf "* applying local patches\n"
+  pushd "$SOURCEDIR/sbbs3" > /dev/null || exit
+  for THISPATCH in $LOCALPATCHES
+  do
+    printf "* patch -b < %s.patch\n" "$PATCHDIR/$THISPATCH"
+    printf "*************************\n"
+    patch -b < "$PATCHDIR/$THISPATCH".patch
+    printf "\n"
+  done
+  popd > /dev/null || exit
+  printf "\n"
+fi
+
+###################################
+# * clean the build directories * #
+###################################
+cd "$SOURCEDIR" || exit
+if [[ $BUILDOPTS =~ $RELEASEOPT ]]; then
+  THISCMD="./cleanall.sh $RELEASEOPT"
+else
+  THISCMD="./cleanall.sh"
+fi
+printf "* %s\n" "$THISCMD"
+printf "*************************\n"
+$THISCMD
+printf "\n"
+
+############################
+# * build all the things * #
+############################
+THISLOC="$SOURCEDIR/sbbs3"
+printf "* building %s\n" "$THISLOC"
+cd "$THISLOC" || exit
+THISCMD="make $BUILDOPTS install"
+printf "* %s\n" "$THISCMD"
+printf "*************************\n"
+$THISCMD
+printf "\n"
+
+THISLOC="$SOURCEDIR/sexpots"
+printf "* building %s\n" "$THISLOC"
+cd "$THISLOC" || exit
+THISCMD="make $BUILDOPTS"
+printf "* %s\n" "$THISCMD"
+printf "*************************\n"
+$THISCMD
+printf "\n"
+
+THISLOC="$SBBSDIR/exec"
+printf "* building %s\n" "$THISLOC"
+cd "$THISLOC" || exit
+THISCMD="make $BUILDOPTS"
+printf "* %s\n" "$THISCMD"
+printf "*************************\n"
+$THISCMD
+printf "\n"
+
+################################
+#* do these only when needed * #
+################################
+#printf "running $SBBSDIR/exec/update.js\n"
+#$SBBSDIR/exec/jsexec $SBBSDIR/exec/update.js
+#printf "\n"
+#printf "running $SBBSDIR/exec/sbbsecho_upgrade.js\n"
+#$SBBSDIR/exec/jsexec $SBBSDIR/exec/sbbsecho_upgrade.js
+#printf "\n"
+
+printf "* attempting to download the latest sbbs_run for text.dat comparison\n"
+if [ ! -d "$TEXTDATDLDIR" ]; then
+  printf "* creating %s...\n" "$TEXTDATDLDIR"
+  mkdir -p "$TEXTDATDLDIR"
+  printf "\n"
+fi
+if [ ! -d "$SBBSDIR/temp" ]; then
+  printf "* creating %s...\n" "$SBBSDIR/temp"
+  mkdir -p "$SBBSDIR/temp"
+  printf "\n"
+fi
+THISCMD="wget --tries=1 ftp://vert.synchro.net/Synchronet/sbbs_run.tgz -O $TEXTDATDLDIR/sbbs_run-$(date '+%Y%m%d').tgz"
+printf "* %s\n" "$THISCMD"
+printf "*************************\n"
+if $THISCMD ; then # wget succeeded
+  printf "\n"
+  printf "* extracting text.dat\n"
+  THISCMD="tar zxvf $TEXTDATDLDIR/sbbs_run-$(date '+%Y%m%d').tgz --strip=1 -C $SBBSDIR/temp/ ctrl/text.dat"
+  printf "* %s\n" "$THISCMD"
+  printf "*************************\n"
+  if $THISCMD ; then #tar succeeded
+    printf "\n"
+    printf "* moving text.dat to %s\n" "$SBBSDIR/ctrl/text-dev.dat"
+    THISCMD="mv -f $SBBSDIR/temp/text.dat $SBBSDIR/ctrl/text-dev.dat"
+    printf "* %s\n" "$THISCMD"
+    printf "*************************\n"
+    if $THISCMD ; then # mv succeeded
+      printf "\n"
+      printf "* diffing current text.dat with text-dev.dat\n"
+      THISCMD="diff $SBBSDIR/ctrl/text.dat $SBBSDIR/ctrl/text-dev.dat > /dev/null 2>&1"
+      printf "* %s\n" "$THISCMD"
+      printf "*************************\n"
+      diff "$SBBSDIR/ctrl/text.dat" "$SBBSDIR/ctrl/text-dev.dat" > /dev/null 2>&1
+      ECODE=$?
+      if [ $ECODE -eq 0 ] ; then
+         printf "* no changes to text.dat since last update\n"
+      elif [ $ECODE -eq 1 ] ; then
+         printf "*!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+         printf "* text.dat has changed since last update!\n"
+         printf "* use \"diff -Nuar %s %s\" to view the changes\n" "$SBBSDIR/ctrl/text.dat" "$SBBSDIR/ctrl/text-dev.dat"
+         printf "* don't forget to copy the new text-dev.dat file to text.dat OR edit\n"
+         printf "* your existing text.dat as needed for the new or changed prompts.\n"
+         printf "*!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+      else
+         printf "*****************************************************************************\n"
+         printf "***** ECODE: %s - There was something wrong with the diff command!! *****\n" $ECODE
+         printf "*****************************************************************************\n"
+      fi # ECODE
+    else # mv failed
+      printf "****************************************\n"
+      printf "***** ECODE: %s - mv failed!!! *****\n" $ECODE
+      printf "****************************************\n"
+    fi # mv
+  else # tar failed
+    printf "*****************************************\n"
+    printf "***** ECODE: %s - tar failed!!! *****\n" $ECODE
+    printf "*****************************************\n"
+  fi # tar
+else # wget failed
+  printf "******************************************\n"
+  printf "***** ECODE: %s - wget failed!!! *****\n" $ECODE
+  printf "******************************************\n"
+fi # wget
+printf "\n"
+
+printf "* SBBS CVS update and compile complete!\n"
+printf "* you should double check your configuration in case there are new\n"
+printf "* or changed settings by entering the following commands:\n"
+printf "*\n"
+printf "* cd %s\n" "$SBBSDIR/ctrl"
+printf "* %s\n" "$SBBSDIR/exec/scfg"
+printf "*\n"
+printf "* then restart sbbs via your OS' execution method:\n"
+printf "*   SYSV. \"sudo /etc/init.d/sbbs restart\"\n"
+printf "* OR\n"
+printf "*   systemd. \"sudo systemctl restart sbbs\"\n"
+printf "*\n"
+printf "* returning to %s\n" "$CWD"
+cd "$CWD" || exit
+
+EDATE1=$(date +"%s")
+printf "* End Date: %s\n" "$(date --date="@$EDATE1" +'%Y-%m-%d %H:%M:%S')"
+EDIFF=$((EDATE1-SDATE1))
+elapsedtime $EDIFF
+printf "*************************\n"
+printf "\n"
+unset APPLYPATCHES
+unset BUILDOPTS
+unset CWD
+unset DEBUGOPT
+unset TEXTDATDLDIR
+unset DOSEMUOPT
+unset ECODE
+unset EDATE1
+unset EDIFF
+unset EXECDATE
+unset INSTALLDIR
+unset INSTALLOPT
+unset INSTDIRMACRO
+unset LOCALPATCHES
+unset LOGFILE
+unset PATCHDIR
+unset RELEASEOPT
+unset SBBSDIR
+unset SCRIPTNAME
+unset SDATE1
+unset SGRP
+unset SOURCEDIR
+unset SRCDIRMACRO
+unset SUSER
+unset THISCMD
+unset THISPATCH
+

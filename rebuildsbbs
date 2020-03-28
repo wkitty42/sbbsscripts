@@ -1,0 +1,248 @@
+#!/bin/bash
+
+# rebuildsbbs - a script to rebuild Synchronet BBS binaries
+# on linux without having to do a full update from the repo.
+#
+# author: mark lewis (aka wkitty42 and waldo kitty)
+# BBS: The SouthEast Star (sestar)
+# BBS domain: sestar.synchro.net
+#
+# this script is targeted at debian-based linux distributions.
+# it does all that is needed to rebuild the sbbs source code
+# without updating the code from the repo. all you need to do is
+# place the script in the existing base directory, make it
+# executable, and then run it. when it completes you should be
+# able to go into sbbs/ctrl and run scfg to double check your
+# configuration settings for execution on your system.
+#
+# this script will create a log file of the same name as this
+# script plus the date and time.
+# eg: rebuildsbbs-201810251345.log
+
+# first load the conf file with all our variables and macros
+MYSCRIPTDIR="$(dirname "$0")"
+MYSCRIPTCONF="$MYSCRIPTDIR/sbbsbuild.conf"
+if [ -f "$MYSCRIPTCONF" ]; then
+  printf "\nLoading %s..." "$MYSCRIPTCONF"
+  source "$MYSCRIPTCONF"
+  printf " complete.\n\n"
+else 
+  echo "required file $MYSCRIPTCONF does not exist... aborting..."
+  exit
+fi
+
+
+
+# you should not need to edit below this line
+
+
+ECODE=0
+CWD=$PWD
+SDATE1=$(date +"%s")
+SCRIPTNAME=$(basename "$0")
+EXECDATE=$(date --date="@$SDATE1" '+%Y%m%d%H%M')
+LOGFILE="$SBBSDIR/$SCRIPTNAME-$EXECDATE.log"
+
+export SBBSCTRL=$SBBSDIR/ctrl
+export SBBSEXEC=$SBBSDIR/exec
+
+printf "\n"
+printf "* %s logging to %s\n" "$SCRIPTNAME" "$LOGFILE"
+
+function elapsedtime () {
+  local T=$1
+  local D=$((T/60/60/24))
+  local H=$((T/60/60%24))
+  local M=$((T/60%60))
+  local S=$((T%60))
+
+  printf "** Total Elapsed Time: %s day" "$D"
+  if [[ $D = 0 ]] || [[ $D -gt 1 ]]; then printf "s"
+  fi
+  printf " %s hour" "$H"
+  if [[ $H = 0 ]] || [[ $H -gt 1 ]]; then printf "s"
+  fi
+  printf " %s minute" "$M"
+  if [[ $M = 0 ]] || [[ $M -gt 1 ]]; then printf "s"
+  fi
+  printf " %s second" "$S"
+  if [[ $S = 0 ]] || [[ $S -gt 1 ]]; then printf "s"
+  fi
+  printf " **\n"
+}
+
+promptyn () {
+  if [ "$#" -ne 2 ]; then
+    printf "\nIllegal number of parameters: %s\n" $#
+    printf "promptyn requires two parameters, the prompt string and the default response\n"
+    printf "eg:\n"
+    printf "  promptyn \"do something? Y/n\" \"Yes\"\n"
+    printf "\nAborting...\n"
+    # we should break out of the script completely here but exit 1 is not working for some reason
+    #exit 1
+    return 1
+  else
+    while true; do
+      printf "\n"
+      read -r -t 30 -n 1 -p "$1 " ANSWER
+      RSLT=$?
+      if [ -n "$ANSWER" ] || [ $RSLT -gt 128 ]; then
+        if [ $RSLT -gt 128 ]; then
+          printf "timed out"
+        fi
+        printf "\n"
+      fi
+      [ -z "$ANSWER" ] && ANSWER="$2"  # force second parameter to be the default choice
+      case ${ANSWER:0:1} in
+        [Yy]* ) return 0;;
+        [Nn]* ) return 1;;
+        * ) printf "Please answer yes or no.\n";;
+      esac
+    done
+  fi
+}
+
+
+# Redirect stdout ( > ) into a named pipe ( >() ) running "tee"
+exec > >(tee "$LOGFILE")
+
+# Without this, only stdout would be captured - i.e. your
+# log file would not contain any error messages.
+exec 2>&1
+
+
+printf "* starting in %s\n" "$CWD"
+printf "* Start Date: %s\n" "$(date --date="@$SDATE1" +'%Y-%m-%d %H:%M:%S')"
+printf "\n"
+printf "BUILDOPTS: %s\n" "$BUILDOPTS"
+printf "\n"
+
+CMD="cd $SBBSDIR"
+printf "%s\n" "$CMD"
+$CMD
+printf "\n"
+
+if ! [[ "$SCRIPTOPTS" = "fullbuild" ]] ; then
+  printf "*** skipping cleanall ***\n"
+else
+  printf "*** cleaning build directories ***\n"
+  CMD="cd $SBBSDIR/src"
+  printf "%s\n" "$CMD"
+  $CMD
+  CMD="./cleanall.sh"
+  printf "%s\n" "$CMD"
+  $CMD
+fi
+printf "\n"
+
+printf "*** recompiling synchronet ***\n"
+printf "** SBBS3 **\n"
+CMD="cd $SBBSDIR/src/sbbs3"
+printf "%s\n" "$CMD"
+$CMD
+CMD="make $BUILDOPTS install"
+printf "%s\n" "$CMD"
+$CMD
+printf "\n"
+
+printf "*** recompiling baja modules ***\n"
+printf "** EXEC **\n"
+CMD="cd $SBBSDIR/exec"
+printf "%s\n" "$CMD"
+$CMD
+CMD="make $BUILDOPTS"
+printf "%s\n" "$CMD"
+$CMD
+printf "\n"
+
+printf "** SEXPOTS **\n"
+CMD="cd $SBBSDIR/src/sexpots"
+printf "%s\n" "$CMD"
+$CMD
+CMD="make $BUILDOPTS"
+printf "%s\n" "$CMD"
+$CMD
+printf "\n"
+
+#printf "running UPDATE.JS\n"
+#$SBBSDIR/exec/jsexec update.js
+
+#printf "running sbbsecho_upgrade.js\n"
+#$SBBSDIR/exec/jsexec sbbsecho_upgrade.js
+
+if ! [[ "$SCRIPTOPTS" = "fullbuild" ]] ; then
+  printf "*** skipping sbbs_run/text.dat download ***\n"
+else
+  printf "*** attempting to grab latest sbbs_run for text.dat ***\n"
+  mkdir -p "$HOME"/downloads/sbbs-dev
+  CMD="wget --tries=1 ftp://vert.synchro.net/Synchronet/sbbs_run.tgz -O $HOME/downloads/sbbs-dev/sbbs_run-$(date '+%Y%m%d').tgz"
+  printf "%s\n" "$CMD"
+  if $CMD ; then # wget succeeded
+    printf "\n"
+    printf "*** extracting text.dat ***\n"
+    CMD="tar zxvf $HOME/downloads/sbbs-dev/sbbs_run-$(date '+%Y%m%d').tgz --strip=1 -C $SBBSDIR/temp/ ctrl/text.dat"
+    printf "%s\n" "$CMD"
+    if $CMD ; then #tar succeeded
+      printf "\n"
+      printf "*** moving text.dat to %s ***\n" "$SBBSDIR/ctrl/text-dev.dat"
+      CMD="mv -f $SBBSDIR/temp/text.dat $SBBSDIR/ctrl/text-dev.dat"
+      printf "%s\n" "$CMD"
+      if $CMD ; then # mv succeeded
+        printf "\n"
+        printf "*** diffing current text.dat with text-dev.dat ***\n"
+        CMD="diff \"$SBBSDIR/ctrl/text.dat\" \"$SBBSDIR/ctrl/text-dev.dat\" > /dev/null 2>&1"
+        printf "%s\n" "$CMD"
+        diff "$SBBSDIR/ctrl/text.dat" "$SBBSDIR/ctrl/text-dev.dat" > /dev/null 2>&1
+        ECODE=$?
+        if [ $ECODE -eq 0 ] ; then
+           printf "*** no changes to text.dat since last update ***\n"
+        elif [ $ECODE -eq 1 ] ; then
+           printf "*** text.dat has changed since last update ***\n"
+           printf "*** use \"diff -Nuar %s %s\" to view the changes ***\n" "$SBBSDIR/ctrl/text.dat" "$SBBSDIR/ctrl/text-dev.dat"
+           printf "*** don't forget to copy the new file in place or edit as needed.\n"
+        else
+           printf "*****************************************************************************\n"
+           printf "***** ECODE: %s - There was something wrong with the diff command!! *****\n" "$ECODE"
+           printf "*****************************************************************************\n"
+        fi # ECODE
+      else # mv failed
+        printf "****************************************\n"
+        printf "***** ECODE: %s - mv failed!!! *****\n" "$ECODE"
+        printf "****************************************\n"
+      fi # mv
+    else # tar failed
+      printf "*****************************************\n"
+      printf "***** ECODE: %s - tar failed!!! *****\n" "$ECODE"
+      printf "*****************************************\n"
+    fi # tar
+  else # wget failed
+    printf "******************************************\n"
+    printf "***** ECODE: %s - wget failed!!! *****\n" "$ECODE"
+    printf "******************************************\n"
+  fi # wget
+fi # not fullbuild
+printf "\n"
+
+printf "SBBS recompile complete!\n"
+printf "restart sbbs by entering \"sudo /etc/init.d/sbbs restart\"\n"
+printf "\n"
+printf "********** returning to %s **********\n" "$CWD"
+cd "$CWD" || exit
+
+EDATE1=$(date +"%s")
+printf "********** End Date: %s **********\n" "$(date --date="@$EDATE1" +'%Y-%m-%d %H:%M:%S')"
+DIFF=$((EDATE1-SDATE1))
+elapsedtime $DIFF
+printf "\n"
+unset EDATE1
+unset SDATE1
+unset DIFF
+unset CMD
+unset SCRIPTNAME
+unset SCRIPTOPTS
+unset SBBSDIR
+unset EXECDATE
+unset LOGFILE
+unset BUILDOPTS
+unset CWD
+unset ECODE
